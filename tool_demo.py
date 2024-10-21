@@ -1,6 +1,7 @@
 from langchain.agents import AgentExecutor, LLMSingleActionAgent
 from langchain.prompts import StringPromptTemplate
 from langchain import OpenAI, LLMChain
+from langchain_community.llms import Replicate
 from langchain.schema import AgentAction, AgentFinish
 from langchain.tools import StructuredTool
 from typing import List, Union, Tuple
@@ -113,7 +114,11 @@ class CustomOutputParser:
         return AgentAction(tool=action, tool_input=action_input.strip(" ").strip('"'), log=llm_output)
 
 # Set up the agent
-llm = OpenAI(temperature=0)
+llm = OpenAI(temperature=0, model = "gpt-4o-mini-2024-07-18")
+# llm = Replicate(
+#     model="meta/meta-llama-3-8b-instruct",
+#     model_kwargs={"temperature": 0.75, "max_length": 500, "top_p": 1},
+# ) # Use this line instead of the OpenAI line to use the MetaLlama model
 llm_chain = LLMChain(llm=llm, prompt=prompt)
 tool_names = [tool.name for tool in tools]
 agent = LLMSingleActionAgent(

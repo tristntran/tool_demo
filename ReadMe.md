@@ -29,6 +29,7 @@ langchain-demo/
 
    ```
    OPENAI_API_KEY=your_api_key_here
+   REPLICATE_API_TOKEN=your_api_token_here
    ```
 
    Replace `your_api_key_here` with your actual OpenAI API key.
