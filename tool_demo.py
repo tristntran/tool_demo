@@ -1,136 +1,107 @@
-from langchain.agents import AgentExecutor, LLMSingleActionAgent
-from langchain.prompts import StringPromptTemplate
-from langchain import OpenAI, LLMChain
-from langchain_community.llms import Replicate
-from langchain.schema import AgentAction, AgentFinish
-from langchain.tools import StructuredTool
-from typing import List, Union, Tuple
-import re
-
-# Define tools using the @tool decorator
+from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_openai import ChatOpenAI
+from langchain.schema.messages import SystemMessage, HumanMessage
 from langchain.tools import tool
+from typing import List, Tuple, Dict
+from dotenv import load_dotenv
+import json
+
+load_dotenv()
 
 @tool
-def solve_knapsack(items: List[str], weights: List[int], values: List[int], capacity: int) -> Tuple[List[str], int]:
+def solve_knapsack(problem_input: str) -> str:
     """
     Solves the knapsack problem.
-    :param items: List of item names
-    :param weights: List of item weights
-    :param values: List of item values
-    :param capacity: Knapsack capacity
-    :return: Tuple of (selected items, total value)
+    :param problem_input: A string containing items, weights, values, and capacity in the format:
+        'items=['A', 'B', 'C'], weights=[2, 3, 4], values=[3, 4, 5], capacity=5'
+    :return: A string describing the selected items and total value
     """
-    n = len(items)
-    dp = [[0 for _ in range(capacity + 1)] for _ in range(n + 1)]
-    
-    for i in range(1, n + 1):
-        for w in range(1, capacity + 1):
-            if weights[i-1] <= w:
-                dp[i][w] = max(values[i-1] + dp[i-1][w-weights[i-1]], dp[i-1][w])
-            else:
-                dp[i][w] = dp[i-1][w]
-    
-    w = capacity
-    selected_items = []
-    for i in range(n, 0, -1):
-        if dp[i][w] != dp[i-1][w]:
-            selected_items.append(items[i-1])
-            w -= weights[i-1]
-    
-    return selected_items[::-1], dp[n][capacity]
+    try:
+        # Extract parameters from the input string
+        params = eval(f"dict({problem_input})")
+        items = params['items']
+        weights = params['weights']
+        values = params['values']
+        capacity = params['capacity']
+        
+        n = len(items)
+        dp = [[0 for _ in range(capacity + 1)] for _ in range(n + 1)]
+        
+        for i in range(1, n + 1):
+            for w in range(1, capacity + 1):
+                if weights[i-1] <= w:
+                    dp[i][w] = max(values[i-1] + dp[i-1][w-weights[i-1]], dp[i-1][w])
+                else:
+                    dp[i][w] = dp[i-1][w]
+        
+        w = capacity
+        selected_items = []
+        for i in range(n, 0, -1):
+            if dp[i][w] != dp[i-1][w]:
+                selected_items.append(items[i-1])
+                w -= weights[i-1]
+        
+        return f"Selected items: {selected_items[::-1]}, Total value: {dp[n][capacity]}"
+    except Exception as e:
+        return f"Error solving knapsack problem: {str(e)}"
 
 @tool
-def fibonacci(n: int) -> int:
+def fibonacci(n: str) -> str:
     """
     Finds the nth Fibonacci number.
-    :param n: Position in the Fibonacci sequence
-    :return: The nth Fibonacci number
+    :param n: A string containing the position in the Fibonacci sequence (e.g., "10")
+    :return: The nth Fibonacci number as a string
     """
-    if n <= 1:
-        return n
-    a, b = 0, 1
-    for _ in range(2, n + 1):
-        a, b = b, a + b
-    return b
+    try:
+        n = int(n)
+        if n <= 1:
+            return str(n)
+        a, b = 0, 1
+        for _ in range(2, n + 1):
+            a, b = b, a + b
+        return f"The {n}th Fibonacci number is {b}"
+    except Exception as e:
+        return f"Error calculating Fibonacci number: {str(e)}"
 
 # Collect the tools
 tools = [solve_knapsack, fibonacci]
 
-# Define the prompt template
-class CustomPromptTemplate(StringPromptTemplate):
-    template: str
-    tools: List[StructuredTool]
+# Create the prompt template
+prompt = ChatPromptTemplate.from_messages([
+    SystemMessage(content="""You are a helpful AI assistant that solves problems step by step.
+    For the knapsack problem, use the solve_knapsack tool with the parameters exactly as given.
+    For the Fibonacci sequence, use the fibonacci tool with just the number.
+    Always execute both tasks and combine their results."""),
+    HumanMessage(content="""Available tools:
+    solve_knapsack: Pass the parameters as a single string with items, weights, values, and capacity.
+    fibonacci: Pass the position number as a string.
     
-    def format(self, **kwargs) -> str:
-        intermediate_steps = kwargs.pop("intermediate_steps")
-        thoughts = ""
-        for action, observation in intermediate_steps:
-            thoughts += action.log
-            thoughts += f"\nObservation: {observation}\nThought: "
-        kwargs["agent_scratchpad"] = thoughts
-        kwargs["tools"] = "\n".join([f"{tool.name}: {tool.description}" for tool in self.tools])
-        kwargs["tool_names"] = ", ".join([tool.name for tool in self.tools])
-        return self.template.format(**kwargs)
-
-prompt = CustomPromptTemplate(
-    template="""Answer the following questions as best you can. You have access to the following tools:
-
-{tools}
-
-Use the following format:
-
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-Begin!
-
-Question: {input}
-Thought: {agent_scratchpad}""",
-    tools=tools,
-    input_variables=["input", "intermediate_steps"]
-)
-
-# Define the output parser
-class CustomOutputParser:
-    def parse(self, llm_output: str) -> Union[AgentAction, AgentFinish]:
-        if "Final Answer:" in llm_output:
-            return AgentFinish(
-                return_values={"output": llm_output.split("Final Answer:")[-1].strip()},
-                log=llm_output,
-            )
-        
-        regex = r"Action: (.*?)[\n]*Action Input:[\s]*(.*)"
-        match = re.search(regex, llm_output, re.DOTALL)
-        if not match:
-            raise ValueError(f"Could not parse LLM output: `{llm_output}`")
-        action = match.group(1).strip()
-        action_input = match.group(2)
-        return AgentAction(tool=action, tool_input=action_input.strip(" ").strip('"'), log=llm_output)
+    {tools}"""),
+    HumanMessage(content="{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
 
 # Set up the agent
-llm = OpenAI(temperature=0, model = "gpt-4o-mini-2024-07-18")
-# llm = Replicate(
-#     model="meta/meta-llama-3-8b-instruct",
-#     model_kwargs={"temperature": 0.75, "max_length": 500, "top_p": 1},
-# ) # Use this line instead of the OpenAI line to use the MetaLlama model
-llm_chain = LLMChain(llm=llm, prompt=prompt)
-tool_names = [tool.name for tool in tools]
-agent = LLMSingleActionAgent(
-    llm_chain=llm_chain, 
-    output_parser=CustomOutputParser(),
-    stop=["\nObservation:"], 
-    allowed_tools=tool_names
-)
+llm = ChatOpenAI(temperature=0, model="gpt-4")
+agent = create_openai_tools_agent(llm, tools, prompt)
 
-# Set up the agent executor
-agent_executor = AgentExecutor.from_agent_and_tools(agent=agent, tools=tools, verbose=True)
+# Create an agent executor
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 # Example usage
-result = agent_executor.run("Solve a knapsack problem with items=['A', 'B', 'C'], weights=[2, 3, 4], values=[3, 4, 5], and capacity=5. Then find the 10th Fibonacci number.")
-print(result)
+if __name__ == "__main__":
+    # Test direct tool usage first
+    print("Direct tool testing:")
+    knapsack_input = "items=['A', 'B', 'C'], weights=[2, 3, 4], values=[3, 4, 5], capacity=5"
+    print("Knapsack result:", solve_knapsack(knapsack_input))
+    print("Fibonacci result:", fibonacci("10"))
+    
+    print("\nTesting with agent:")
+    query = ("Please solve these two problems:\n"
+             "1. Solve the knapsack problem with these parameters:\n"
+             "items=['A', 'B', 'C'], weights=[2, 3, 4], values=[3, 4, 5], capacity=5\n"
+             "2. Find the 10th Fibonacci number")
+    
+    result = agent_executor.invoke({"input": query})
+    print("\nFinal Result:", result)
